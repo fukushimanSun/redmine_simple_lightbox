@@ -3,7 +3,7 @@ require 'redmine'
 Redmine::Plugin.register :redmine_simple_lightbox do
   name        'Redmine Simple Lightbox'
   author      'Fukushima'
-  description 'Click images in wiki/issues to open a simple lightbox modal.'
+  description 'Click images, thumbnails, and attachment links in wiki/issues to open a simple lightbox modal.'
   version     '1.0.1'
   requires_redmine :version_or_higher => '6.0.0'
 end
@@ -40,19 +40,15 @@ module RedmineSimpleLightbox
             position: absolute; top: 12px; right: 16px;
             font-size: 32px; color: #fff; cursor: pointer;
           }
+
+          /* 添付リンクやサムネにも拡大カーソル */
+          a[href*="/attachments/"], a[href*="/attachments/"] img {
+            cursor: zoom-in;
+          }
         </style>
 
         <script>
           document.addEventListener('DOMContentLoaded', function(){
-            var sels = [
-              '#content img:not(.gravatar)',
-              '.wiki img','.wiki-content img',
-              '.journal .wiki img','.issue .wiki img',
-              '.news .wiki img','.preview .wiki img'
-            ];
-            var imgs = document.querySelectorAll(sels.join(','));
-            if(!imgs.length) return;
-
             // モーダル生成
             var ov = document.createElement('div');
             ov.className = 'rm-lb';
@@ -70,39 +66,54 @@ module RedmineSimpleLightbox
               if(e.key==='Escape') close();
             });
 
-            // サムネ → 原寸に変換
-            function fullSrcFrom(hrefOrSrc){
-              if(!hrefOrSrc) return '';
-              try{
-                // /attachments/thumbnail/31/200 → /attachments/download/31
-                var m = hrefOrSrc.match(/\/attachments\/thumbnail\/(\d+)\/\d+/);
-                if(m){ return '/attachments/download/' + m[1]; }
+            // URLを原寸用に正規化
+            function normalizeHref(href){
+              if(!href) return '';
 
-                // 既に /attachments/download/xx ならそのまま
-                if (/\/attachments\/download\/\d+/.test(hrefOrSrc)) return hrefOrSrc;
+              // /attachments/thumbnail/ID/200 → /attachments/download/ID
+              var m = href.match(/\\/attachments\\/thumbnail\\/(\\d+)\\/\\d+/);
+              if(m) return '/attachments/download/' + m[1];
 
-                // 画像拡張子付きはそのまま
-                if (/\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(hrefOrSrc)) return hrefOrSrc;
-
-                // 相対URLを絶対に変換
-                var a = document.createElement('a');
-                a.href = hrefOrSrc;
-                return a.href;
-              }catch(e){
-                return hrefOrSrc;
+              // /attachments/123 → ?download=1 を付けて生ファイル
+              if (/\\/attachments\\/\\d+(?:$|[?#])/.test(href) && !/\\/download\\//.test(href)) {
+                href += (href.includes('?') ? '&' : '?') + 'download=1';
               }
+
+              return href;
             }
 
-            imgs.forEach(function(img){
-              var a   = img.closest('a[href]');
-              var raw = a ? a.getAttribute('href') : img.getAttribute('src');
-              var src = fullSrcFrom(raw);
+            // クリックイベントを一括で監視（イベント委譲）
+            document.addEventListener('click', function(e){
+              var a = e.target.closest('a[href]');
+              if (!a) return;
 
-              img.style.cursor = 'zoom-in';
-              img.addEventListener('click', function(ev){
-                if (a) ev.preventDefault(); // リンク遷移を止めてモーダルに
-                open(src, img.getAttribute('alt'));
-              });
+              var href = a.getAttribute('href') || '';
+              var isAttachment =
+                /\\/attachments\\/(thumbnail|download)\\/\\d+/.test(href) ||
+                /\\/attachments\\/\\d+(?:$|[?#])/.test(href);
+
+              var hasThumbImg =
+                a.querySelector('img') &&
+                /\\/attachments\\/thumbnail\\/\\d+\\/\\d+/.test(a.querySelector('img').src);
+
+              if (!isAttachment && !hasThumbImg) return;
+
+              e.preventDefault();
+              href = normalizeHref(href);
+
+              // ファイル名を補完
+              var innerImg = a.querySelector('img');
+              var fname =
+                a.getAttribute('data-filename') ||
+                (innerImg && innerImg.getAttribute('alt')) ||
+                a.textContent.trim();
+
+              if (/\\/attachments\\/download\\/\\d+(\\/)?$/.test(href) && fname) {
+                href = href.replace(/\\/$/, '') + '/' + encodeURIComponent(fname);
+              }
+
+              var altText = innerImg ? (innerImg.getAttribute('alt') || '') : (a.getAttribute('title') || a.textContent.trim());
+              open(href, altText);
             });
           });
         </script>
