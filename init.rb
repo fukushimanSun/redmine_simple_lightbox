@@ -1,11 +1,12 @@
+# plugins/redmine_simple_lightbox/init.rb
 require 'redmine'
 
 Redmine::Plugin.register :redmine_simple_lightbox do
   name        'Redmine Simple Lightbox'
   author      'Fukushima'
-  description 'Click images, thumbnails, and attachment links in wiki/issues to open a simple lightbox modal.'
-  version     '1.0.6'
-  requires_redmine :version_or_higher => '6.0.0'
+  description 'Click images in wiki/issues to open a simple lightbox modal. Thumbnails too.'
+  version     '1.0.7'
+  requires_redmine version_or_higher: '6.0.0'
 end
 
 module RedmineSimpleLightbox
@@ -13,147 +14,112 @@ module RedmineSimpleLightbox
     def view_layouts_base_html_head(_context = {})
       <<~HTML.html_safe
         <style>
-          /* 本文画像の表示幅制御（必要に応じて 600px を調整） */
-          #content img:not(.gravatar),
-          .wiki img,.wiki-content img,
-          .journal .wiki img,.issue .wiki img,
-          .news .wiki img,.preview .wiki img {
-            max-width: 600px !important;
-            width: 100%;
-            height: auto !important;
-          }
-
-          /* モーダル */
-          .rm-lb {
-            position: fixed; inset: 0;
-            display: none; align-items: center; justify-content: center;
-            background: rgba(0,0,0,.75);
-            z-index: 9999; padding: 2rem;
-          }
-          .rm-lb.is-open { display: flex; }
-          .rm-lb img {
-            max-width: 95vw; max-height: 90vh;
-            box-shadow: 0 10px 30px rgba(0,0,0,.5);
-            border-radius: 8px;
-          }
-          .rm-lb .x {
-            position: absolute; top: 12px; right: 16px;
-            font-size: 32px; color: #fff; cursor: pointer;
-          }
-
-          /* 添付リンクやサムネにも拡大カーソル */
-          a[href*="/attachments/"], a[href*="/attachments/"] img {
-            cursor: zoom-in;
-          }
-          /* 本文中の画像にもヒント */
-          #content img:not(.gravatar),
-          .wiki img,.wiki-content img,
-          .journal .wiki img,.issue .wiki img,
-          .news .wiki img,.preview .wiki img {
-            cursor: zoom-in;
+          .rm-lightbox-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.75);z-index:9999;padding:2rem;}
+          .rm-lightbox-overlay.is-open{display:flex;}
+          .rm-lightbox-image{max-width:95vw;max-height:90vh;box-shadow:0 10px 30px rgba(0,0,0,.5);border-radius:8px;}
+          .rm-lightbox-close{position:absolute;top:12px;right:16px;font-size:32px;line-height:1;color:#fff;cursor:pointer;user-select:none;}
+          /* 本文内の画像は枠にフィット（ファイル名リンクのアイコン等には影響しない） */
+          #content .wiki img,
+          #content .wiki-content img,
+          #content .journal .wiki img,
+          #content .issue .wiki img,
+          #content .news .wiki img,
+          #content .preview .wiki img{
+            max-width:100% !important; height:auto !important;
           }
         </style>
-
         <script>
           document.addEventListener('DOMContentLoaded', function(){
-            // ===== モーダル生成 =====
-            var ov = document.createElement('div');
-            ov.className = 'rm-lb';
-            ov.innerHTML = '<img alt=""><span class="x" aria-label="Close">×</span>';
-            document.body.appendChild(ov);
-            var big = ov.querySelector('img');
+            // -------- Lightbox 本体 --------
+            var overlay=document.createElement('div');
+            overlay.className='rm-lightbox-overlay';
+            overlay.innerHTML='<span class="rm-lightbox-close" aria-label="Close">×</span><img class="rm-lightbox-image" alt="">';
+            document.body.appendChild(overlay);
+            var closeBtn=overlay.querySelector('.rm-lightbox-close');
+            var imgEl=overlay.querySelector('.rm-lightbox-image');
 
-            function open(src, alt){
-              if(!src) return;
-              big.src = src;
-              big.alt = alt || '';
-              ov.classList.add('is-open');
+            function openLightbox(src, alt){
+              imgEl.removeAttribute('src'); // ちらつき防止
+              imgEl.setAttribute('alt', alt || '');
+              overlay.classList.add('is-open');
+              imgEl.setAttribute('src', src);
             }
-            function close(){
-              ov.classList.remove('is-open');
-              big.removeAttribute('src');
-              big.removeAttribute('alt');
-            }
-
-            ov.addEventListener('click', function(e){
-              if (e.target === ov || e.target.classList.contains('x')) close();
+            function closeLightbox(){ overlay.classList.remove('is-open'); }
+            overlay.addEventListener('click', function(e){
+              if(e.target===overlay || e.target===closeBtn){ closeLightbox(); }
             });
             document.addEventListener('keydown', function(e){
-              if (e.key === 'Escape') close();
+              if(e.key==='Escape'){ closeLightbox(); }
             });
 
-            // ===== URL 正規化ユーティリティ =====
-            // - /attachments/thumbnail/:id/:size -> /attachments/download/:id
-            // - /attachments/:id               -> ?download=1 を付与（生ファイルへ）
-            function normalizeToDownload(hrefOrSrc){
-              if (!hrefOrSrc) return '';
+            // -------- URL 変換ユーティリティ --------
+            // inline画像やサムネイルから、原寸URLに変換
+            function fullSrcFrom(href){
+              if(!href) return href;
               try{
-                var u = new URL(hrefOrSrc, document.baseURI);
-                var p = u.pathname;
+                var u=new URL(href, window.location.origin);
+                var p=u.pathname;
 
-                var m = p.match(/\\/attachments\\/thumbnail\\/(\\d+)\\/\\d+/);
-                if (m) {
-                  p = p.replace(/\\/attachments\\/thumbnail\\/(\\d+)\\/\\d+/, '/attachments/download/$1');
-                  u.pathname = p;
-                  u.search = ''; // サムネ系の余計なクエリは排除
-                  return u.toString();
-                }
+                // サムネイルURL -> 原寸（download 優先、なければ attachments）
+                // /attachments/thumbnail/:id/:size  -> /attachments/download/:id
+                var m=p.match(/^\\/attachments\\/thumbnail\\/(\\d+)\\//);
+                if(m){ return '/attachments/download/'+m[1]; }
 
-                // /attachments/123 （末尾スラorなし）→ 生ファイル
-                if (/\\/attachments\\/\\d+(?:\\/?$)/.test(p) && !/\\/attachments\\/download\\//.test(p)) {
-                  u.searchParams.set('download', '1');
-                  return u.toString();
-                }
+                // すでに /attachments/download/:id ならそのまま
+                if(/^\\/attachments\\/download\\/(\\d+)/.test(p)){ return u.pathname+u.search; }
 
-                // それ以外はそのまま（/attachments/download/ID 含む）
-                return u.toString();
-              } catch(e){
-                return hrefOrSrc;
+                // /attachments/:id(/filename) もそのまま原寸表示される
+                if(/^\\/attachments\\/(\\d+)/.test(p)){ return u.pathname+u.search; }
+
+                // 通常の画像ソース (/attachments/…) 以外はそのまま返す
+                return href;
+              }catch(_e){
+                return href;
               }
             }
 
-            // ===== クリックを一括ハンドル（イベント委譲） =====
-            document.addEventListener('click', function(e){
-              var a = e.target.closest('a[href]');
+            // -------- 1) 本文中の画像（wiki/issue/news等） --------
+            var inlineImgs = document.querySelectorAll([
+              '#content .wiki img',
+              '#content .wiki-content img',
+              '#content .journal .wiki img',
+              '#content .issue .wiki img',
+              '#content .news .wiki img',
+              '#content .preview .wiki img'
+            ].join(','));
 
-              // 1) まず a[href] を優先（添付ファイル名リンク / サムネ画像のリンク）
-              if (a) {
-                var href = a.getAttribute('href') || '';
+            inlineImgs.forEach(function(img){
+              // a[href] で囲まれていれば href を原寸候補に
+              var a = img.closest('a[href]');
+              var base = (a ? a.getAttribute('href') : img.getAttribute('src')) || '';
+              var src  = fullSrcFrom(base);
 
-                var isAttachmentLink =
-                  /\\/attachments\\//.test(href) ||               // 添付系全般
-                  !!a.querySelector('img');                       // サムネ等の画像リンク
-
-                if (isAttachmentLink) {
-                  e.preventDefault();
-
-                  // a 内の <img> がサムネならそれを優先的に原寸化
-                  var innerImg = a.querySelector('img');
-                  var candidate = innerImg ? innerImg.getAttribute('src') : href;
-                  var finalUrl  = normalizeToDownload(candidate);
-
-                  // alt は画像から、なければ title/テキスト
-                  var altText = innerImg ? (innerImg.getAttribute('alt') || '') :
-                                (a.getAttribute('title') || a.textContent.trim());
-
-                  open(finalUrl, altText);
-                  return;
-                }
-              }
-
-              // 2) 次に、本文中の裸の <img> クリック（リンクで囲まれていない画像）
-              var img = e.target.closest('img');
-              if (img &&
-                  img.closest('#content, .wiki, .wiki-content, .journal .wiki, .issue .wiki, .news .wiki, .preview .wiki') &&
-                  !img.classList.contains('gravatar')) {
-                // a[href] がない（または a が添付系でない）場合のみ処理
-                if (!a) {
-                  e.preventDefault();
-                  var src = normalizeToDownload(img.getAttribute('src'));
-                  open(src, img.getAttribute('alt') || '');
-                }
-              }
+              img.style.cursor='zoom-in';
+              img.addEventListener('click', function(ev){
+                ev.preventDefault(); // 本文中は必ずモーダル
+                openLightbox(src, img.getAttribute('alt'));
+              });
             });
+
+            // -------- 2) 添付ファイルのサムネイル（画像だけモーダル） --------
+            // ファイル一覧のテキストリンク（a.icon-attachment）は除外して通常遷移にする
+            var thumbs = document.querySelectorAll('div.attachments .thumbnails a[href] > img');
+
+            thumbs.forEach(function(img){
+              var a = img.parentElement; // サムネイルの <a>
+              var href = a.getAttribute('href') || '';
+              var src  = fullSrcFrom(href);
+
+              img.style.cursor='zoom-in';
+              a.addEventListener('click', function(ev){
+                // モーダルで拡大（テキストリンクはこのハンドラが付かないので通常遷移）
+                ev.preventDefault();
+                openLightbox(src, img.getAttribute('alt'));
+              });
+            });
+
+            // 念のため：添付ファイル名のテキストリンクは何もしない（通常の /attachments/ 遷移）
+            // ここにはハンドラを付けないことで干渉ゼロにしています。
           });
         </script>
       HTML
