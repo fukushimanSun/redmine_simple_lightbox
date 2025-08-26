@@ -43,22 +43,22 @@ module RedmineSimpleLightbox
         </style>
 
         <script>
-          document.addEventListener('DOMContentLoaded',function(){
-            var sels=[
+          document.addEventListener('DOMContentLoaded', function(){
+            var sels = [
               '#content img:not(.gravatar)',
               '.wiki img','.wiki-content img',
               '.journal .wiki img','.issue .wiki img',
               '.news .wiki img','.preview .wiki img'
             ];
-            var imgs=document.querySelectorAll(sels.join(','));
+            var imgs = document.querySelectorAll(sels.join(','));
             if(!imgs.length) return;
 
             // モーダル生成
-            var ov=document.createElement('div');
-            ov.className='rm-lb';
-            ov.innerHTML='<img alt=""><span class="x" aria-label="Close">×</span>';
+            var ov = document.createElement('div');
+            ov.className = 'rm-lb';
+            ov.innerHTML = '<img alt=""><span class="x" aria-label="Close">×</span>';
             document.body.appendChild(ov);
-            var big=ov.querySelector('img');
+            var big = ov.querySelector('img');
 
             function open(src,alt){ big.src=src; big.alt=alt||''; ov.classList.add('is-open'); }
             function close(){ ov.classList.remove('is-open'); big.removeAttribute('src'); big.removeAttribute('alt'); }
@@ -70,39 +70,38 @@ module RedmineSimpleLightbox
               if(e.key==='Escape') close();
             });
 
-            imgs.forEach(function(img){
-              // まず a[href] をチェック
-              var a = img.closest('a[href]');
-              var src = img.getAttribute('src') || '';
+            // サムネ → 原寸に変換
+            function fullSrcFrom(hrefOrSrc){
+              if(!hrefOrSrc) return '';
+              try{
+                // /attachments/thumbnail/31/200 → /attachments/download/31
+                var m = hrefOrSrc.match(/\/attachments\/thumbnail\/(\d+)\/\d+/);
+                if(m){ return '/attachments/download/' + m[1]; }
 
-              if (a) {
-                var href = a.getAttribute('href') || '';
+                // 既に /attachments/download/xx ならそのまま
+                if (/\/attachments\/download\/\d+/.test(hrefOrSrc)) return hrefOrSrc;
 
-                if (href) {
-                  // 添付サムネ → 原寸ダウンロードURLに置換
-                  href = href.replace(/\\/attachments\\/thumbnail\\/(\\d+)\\/\\d+/, '/attachments/download/$1');
+                // 画像拡張子付きはそのまま
+                if (/\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(hrefOrSrc)) return hrefOrSrc;
 
-                  // 添付ページ (/attachments/123) は ?download=1 を付与
-                  if (/\\/attachments\\/\\d+(?:$|[?#])/.test(href) && !/\\/download\\//.test(href)) {
-                    href += (href.includes('?') ? '&' : '?') + 'download=1';
-                  }
-
-                  // ファイル名が分かれば download/{id}/{filename} 形式に
-                  var fname = a.getAttribute('data-filename') ||
-                              img.getAttribute('data-filename') ||
-                              img.getAttribute('alt');
-                  if (/\\/attachments\\/download\\/\\d+(\\/)?$/.test(href) && fname) {
-                    href = href.replace(/\\/$/, '') + '/' + encodeURIComponent(fname);
-                  }
-
-                  src = href;
-                }
+                // 相対URLを絶対に変換
+                var a = document.createElement('a');
+                a.href = hrefOrSrc;
+                return a.href;
+              }catch(e){
+                return hrefOrSrc;
               }
+            }
+
+            imgs.forEach(function(img){
+              var a   = img.closest('a[href]');
+              var raw = a ? a.getAttribute('href') : img.getAttribute('src');
+              var src = fullSrcFrom(raw);
 
               img.style.cursor = 'zoom-in';
               img.addEventListener('click', function(ev){
-                ev.preventDefault();
-                open(src, img.getAttribute('alt') || '');
+                if (a) ev.preventDefault(); // リンク遷移を止めてモーダルに
+                open(src, img.getAttribute('alt'));
               });
             });
           });
